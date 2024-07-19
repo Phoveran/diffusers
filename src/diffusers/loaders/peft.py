@@ -48,10 +48,10 @@ class PeftAdapterMixin:
             adapter_name (`str`, *optional*, defaults to `"default"`):
                 The name of the adapter to add. If no name is passed, a default name is assigned to the adapter.
         """
-        check_peft_version(min_version=MIN_PEFT_VERSION)
+        # check_peft_version(min_version=MIN_PEFT_VERSION)
 
-        if not is_peft_available():
-            raise ImportError("PEFT is not available. Please install PEFT to use this function: `pip install peft`.")
+        # if not is_peft_available():
+        #     raise ImportError("PEFT is not available. Please install PEFT to use this function: `pip install peft`.")
 
         from peft import PeftConfig, inject_adapter_in_model
 
@@ -82,10 +82,10 @@ class PeftAdapterMixin:
             adapter_name (Union[str, List[str]])):
                 The list of adapters to set or the adapter name in the case of a single adapter.
         """
-        check_peft_version(min_version=MIN_PEFT_VERSION)
+        # check_peft_version(min_version=MIN_PEFT_VERSION)
 
-        if not self._hf_peft_config_loaded:
-            raise ValueError("No adapter loaded. Please load an adapter first.")
+        # if not self._hf_peft_config_loaded:
+        #     raise ValueError("No adapter loaded. Please load an adapter first.")
 
         if isinstance(adapter_name, str):
             adapter_name = [adapter_name]

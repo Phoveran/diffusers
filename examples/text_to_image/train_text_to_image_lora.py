@@ -15,6 +15,10 @@
 # limitations under the License.
 """Fine-tuning script for Stable Diffusion for text2image with support for LoRA."""
 
+import sys
+sys.path.append('./third-party/diffusers/src')
+sys.path.append('./src')
+
 import argparse
 import logging
 import math
@@ -533,6 +537,7 @@ def main():
 
     # Add adapter and make sure the trainable params are in float32.
     unet.add_adapter(unet_lora_config)
+
     if args.mixed_precision == "fp16":
         # only upcast trainable parameters (LoRA) into fp32
         cast_training_params(unet, dtype=torch.float32)
