@@ -40,7 +40,7 @@ from accelerate.utils import ProjectConfiguration, set_seed
 from datasets import load_dataset
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
-from peft import LoraConfig
+from peft import LoraConfig, C3AConfig
 from peft.utils import get_peft_model_state_dict
 from torchvision import transforms
 from tqdm.auto import tqdm
@@ -99,7 +99,7 @@ These are LoRA adaption weights for {base_model}. The weights were fine-tuned on
         "text-to-image",
         "diffusers",
         "diffusers-training",
-        "lora",
+        "peft",
     ]
     model_card = populate_model_card(model_card, tags=tags)
 
@@ -416,11 +416,18 @@ def parse_args():
         "--enable_xformers_memory_efficient_attention", action="store_true", help="Whether or not to use xformers."
     )
     parser.add_argument("--noise_offset", type=float, default=0, help="The scale of noise offset.")
+    parser.add_argument("--peft_method", type=str, default="lora", choices=["lora", "c3a"], help="The method to use for PEFT.")
     parser.add_argument(
         "--rank",
         type=int,
         default=4,
         help=("The dimension of the LoRA update matrices."),
+    )
+    parser.add_argument(
+        "--block_size",
+        type=int,
+        default=256,
+        help=("The block size of the C3A update matrices."),
     )
 
     args = parser.parse_args()
@@ -523,12 +530,33 @@ def main():
     for param in unet.parameters():
         param.requires_grad_(False)
 
-    unet_lora_config = LoraConfig(
-        r=args.rank,
-        lora_alpha=args.rank,
-        init_lora_weights="gaussian",
-        target_modules=["to_k", "to_q", "to_v", "to_out.0"],
-    )
+    if args.peft_method == "lora":
+        unet_lora_config = LoraConfig(
+            r=args.rank,
+            lora_alpha=args.rank,
+            init_lora_weights="gaussian",
+            target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+        )
+    elif args.peft_method == "c3a":
+        import math
+        def get_block_size_from_shape(shape):
+            if shape[0] == shape[1]:
+                return shape[0] // 2
+            else:
+                return math.gcd(shape[0], shape[1])
+        
+        block_size_dict = {}
+        for name, param in unet.named_parameters():
+            if "to_k" in name or "to_q" in name or "to_v" in name or "to_out.0" in name:
+                if "weight" in name:
+                    block_size_dict[name.replace(".weight", "")] = get_block_size_from_shape(param.shape)
+
+        unet_lora_config = C3AConfig(
+            block_size=args.block_size,
+            init_weights="xavier_uniform",
+            block_size_pattern=block_size_dict,
+            target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+        )
 
     # Move unet, vae and text_encoder to device and cast to weight_dtype
     unet.to(accelerator.device, dtype=weight_dtype)
@@ -939,26 +967,32 @@ def main():
         unet = unet.to(torch.float32)
 
         unwrapped_unet = unwrap_model(unet)
-        unet_lora_state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrapped_unet))
-        StableDiffusionPipeline.save_lora_weights(
-            save_directory=args.output_dir,
-            unet_lora_layers=unet_lora_state_dict,
-            safe_serialization=True,
-        )
+        # unet_lora_state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrapped_unet))
+        # StableDiffusionPipeline.save_lora_weights(
+        #     save_directory=args.output_dir,
+        #     unet_lora_layers=unet_lora_state_dict,
+        #     safe_serialization=True,
+        # )
 
         # Final inference
         # Load previous pipeline
         if args.validation_prompt is not None:
+            # pipeline = DiffusionPipeline.from_pretrained(
+            #     args.pretrained_model_name_or_path,
+            #     revision=args.revision,
+            #     variant=args.variant,
+            #     torch_dtype=weight_dtype,
+            # )
+
+            # load attention processors
+            # pipeline.load_lora_weights(args.output_dir)
             pipeline = DiffusionPipeline.from_pretrained(
                 args.pretrained_model_name_or_path,
+                unet=unwrap_model(unet),
                 revision=args.revision,
                 variant=args.variant,
                 torch_dtype=weight_dtype,
             )
-
-            # load attention processors
-            pipeline.load_lora_weights(args.output_dir)
-
             # run inference
             images = log_validation(pipeline, args, accelerator, epoch, is_final_validation=True)
 
