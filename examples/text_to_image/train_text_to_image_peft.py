@@ -27,6 +27,7 @@ import random
 import shutil
 from contextlib import nullcontext
 from pathlib import Path
+import math
 
 import datasets
 import numpy as np
@@ -129,8 +130,9 @@ def log_validation(
         autocast_ctx = torch.autocast(accelerator.device.type)
 
     with autocast_ctx:
-        for _ in range(args.num_validation_images):
-            images.append(pipeline(args.validation_prompt, num_inference_steps=30, generator=generator).images[0])
+        for prompt in args.validation_prompt:
+            for _ in range(args.num_validation_images):
+                images.append(pipeline(prompt, num_inference_steps=30, generator=generator).images[0])
 
     for tracker in accelerator.trackers:
         phase_name = "test" if is_final_validation else "validation"
@@ -141,7 +143,7 @@ def log_validation(
             tracker.log(
                 {
                     phase_name: [
-                        wandb.Image(image, caption=f"{i}: {args.validation_prompt}") for i, image in enumerate(images)
+                        wandb.Image(image, caption=f"{i}: {args.validation_prompt[i//args.num_validation_images]}") for i, image in enumerate(images)
                     ]
                 }
             )
@@ -449,6 +451,7 @@ DATASET_NAME_MAPPING = {
 
 def main():
     args = parse_args()
+
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
             "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
@@ -538,7 +541,6 @@ def main():
             target_modules=["to_k", "to_q", "to_v", "to_out.0"],
         )
     elif args.peft_method == "c3a":
-        import math
         def get_block_size_from_shape(shape):
             if shape[0] == shape[1]:
                 return shape[0] // 2
@@ -771,6 +773,8 @@ def main():
     if accelerator.is_main_process:
         accelerator.init_trackers("text2image-fine-tune", config=vars(args))
 
+    args.validation_prompt = args.validation_prompt.strip().split("; ")
+
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
@@ -902,43 +906,43 @@ def main():
                 accelerator.log({"train_loss": train_loss}, step=global_step)
                 train_loss = 0.0
 
-                if global_step % args.checkpointing_steps == 0:
-                    if accelerator.is_main_process:
-                        # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
-                        if args.checkpoints_total_limit is not None:
-                            checkpoints = os.listdir(args.output_dir)
-                            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
-                            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+                # if global_step % args.checkpointing_steps == 0:
+                #     if accelerator.is_main_process:
+                #         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
+                #         if args.checkpoints_total_limit is not None:
+                #             checkpoints = os.listdir(args.output_dir)
+                #             checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+                #             checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
 
-                            # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
-                            if len(checkpoints) >= args.checkpoints_total_limit:
-                                num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
-                                removing_checkpoints = checkpoints[0:num_to_remove]
+                #             # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
+                #             if len(checkpoints) >= args.checkpoints_total_limit:
+                #                 num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
+                #                 removing_checkpoints = checkpoints[0:num_to_remove]
 
-                                logger.info(
-                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
-                                )
-                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+                #                 logger.info(
+                #                     f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                #                 )
+                #                 logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
 
-                                for removing_checkpoint in removing_checkpoints:
-                                    removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                    shutil.rmtree(removing_checkpoint)
+                #                 for removing_checkpoint in removing_checkpoints:
+                #                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
+                #                     shutil.rmtree(removing_checkpoint)
 
-                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
+                #         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                #         accelerator.save_state(save_path)
 
-                        unwrapped_unet = unwrap_model(unet)
-                        unet_lora_state_dict = convert_state_dict_to_diffusers(
-                            get_peft_model_state_dict(unwrapped_unet)
-                        )
+                        # unwrapped_unet = unwrap_model(unet)
+                        # unet_lora_state_dict = convert_state_dict_to_diffusers(
+                        #     get_peft_model_state_dict(unwrapped_unet)
+                        # )
 
-                        StableDiffusionPipeline.save_lora_weights(
-                            save_directory=save_path,
-                            unet_lora_layers=unet_lora_state_dict,
-                            safe_serialization=True,
-                        )
+                        # StableDiffusionPipeline.save_lora_weights(
+                        #     save_directory=save_path,
+                        #     unet_lora_layers=unet_lora_state_dict,
+                        #     safe_serialization=True,
+                        # )
 
-                        logger.info(f"Saved state to {save_path}")
+                        # logger.info(f"Saved state to {save_path}")
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
